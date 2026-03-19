@@ -1,5 +1,7 @@
 # 🚀 Star Citizen Log Visualizer 🥹
 
+**[➡️ Live Application](https://star-citizen-log-visualizer.streamlit.app)**
+
 An automated tool for Star Citizen players that parses and visualizes `Game.log` files to provide meaningful statistics and event summaries about your play session.
 
 This Streamlit web application allows you to simply upload your log file and instantly get insights into your activities.
