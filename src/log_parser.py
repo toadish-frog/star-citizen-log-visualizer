@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- Dataclasses for storing parsed data ---
 
@@ -70,6 +70,7 @@ class DeathEvent:
     ship_brand: Optional[str] = None
     ship_make: Optional[str] = None
     approx_loc: Optional[str] = None
+    hit_zone: Optional[str] = None  # Added for fatal collisions
 
 @dataclass
 class TravelEvent:
@@ -106,8 +107,9 @@ PATTERNS = {
     'hostname': re.compile(r'network hostname: (.*)'),
     'system_login': re.compile(r"Successfully activated profile 'default' for user '([^']*)'"),
     'actor_name': re.compile(r'name\s([a-zA-Z0-9_]+)\s-\sstate'),
-    
+
     # Death Events
+    'fatal_collision': re.compile(r"<(?P<timestamp>.*?)> \[Notice\] <FatalCollision> Fatal Collision occured for vehicle (?P<ship_id>.*?) \[Part: (?P<hit_zone>.*?),.*?Zone: (?P<location>.*?), PlayerPilot: 1\]"),
     'death_in_ship': re.compile(r"<(?P<timestamp>.*?)>.*Actor '(?P<player_name>.*?)' \[\d+\] ejected from zone '(?P<ship>.*?)' \[\d+\] to zone '(?P<location>.*?)'"),
     'death_on_foot': re.compile(r'<(?P<timestamp>.*?)> \[Notice\] <UpdateNotificationItem> Notification "Incapacitated:.*?" \[(?P<id>\d+)\], Action: (Next|RemoveIgnore)'),
 
@@ -121,15 +123,13 @@ PATTERNS = {
 # --- Main Parsing Functions ---
 
 def parse_session_metadata(log_content: str) -> SessionMetadata:
-    # ... (implementation from previous step)
+    # This function remains unchanged
     metadata = SessionMetadata()
     lines = log_content.splitlines()
-
     for line in lines:
         if "Loading level" in line:
              if all([metadata.game.build, metadata.device.processor.name, metadata.user.actor_name]):
                  break
-        
         if not metadata.game.build and (match := PATTERNS['game_build'].search(line)):
             metadata.game.build = match.group(1)
         elif not metadata.game.file_version and (match := PATTERNS['file_version'].search(line)):
@@ -172,41 +172,85 @@ def parse_session_metadata(log_content: str) -> SessionMetadata:
             metadata.user.system_login = match.group(1)
         elif not metadata.user.actor_name and (match := PATTERNS['actor_name'].search(line)):
             metadata.user.actor_name = match.group(1)
-
     return metadata
 
 def parse_death_events(log_content: str, actor_name: Optional[str] = None) -> List[DeathEvent]:
-    # ... (implementation from previous step)
+    """
+    Parses the game.log content to extract all types of death events,
+    distinguishing between normal deaths and fatal collisions.
+    """
     death_events = []
     lines = log_content.splitlines()
     seen_on_foot_death_ids = set()
+    recent_fatal_collisions = []
+    TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+    TIME_WINDOW = timedelta(seconds=5)
 
     for line in lines:
+        try:
+            current_dt = datetime.strptime(line.split('>')[0].strip('<'), TIME_FORMAT)
+        except (ValueError, IndexError):
+            continue
+
+        # 1. Clean up old collision events from our temporary list
+        recent_fatal_collisions = [
+            fc for fc in recent_fatal_collisions 
+            if (current_dt - fc['timestamp_dt']) < TIME_WINDOW
+        ]
+
+        # 2. Check for new fatal collision events and store them
+        collision_match = PATTERNS['fatal_collision'].search(line)
+        if collision_match:
+            data = collision_match.groupdict()
+            data['timestamp_dt'] = datetime.strptime(data['timestamp'], TIME_FORMAT)
+            recent_fatal_collisions.append(data)
+            continue
+
+        # 3. Check for "death in ship" events and see if they match a collision
         ship_death_match = PATTERNS['death_in_ship'].search(line)
         if ship_death_match:
-            data = ship_death_match.groupdict()
-            
-            # Parse ship brand and make
-            ship_parts = data['ship'].split('_')
-            ship_brand = ship_parts[0]
-            ship_make = ' '.join(p.capitalize() for p in ship_parts[1:-1] if not p.isdigit())
+            ship_death_data = ship_death_match.groupdict()
+            is_fatal_collision = False
 
+            for i, fc in enumerate(recent_fatal_collisions):
+                # Match if the ship ID from collision is part of the ship name in the death event
+                if fc['ship_id'] in ship_death_data['ship']:
+                    ship_parts = ship_death_data['ship'].split('_')
+                    event = DeathEvent(
+                        timestamp=ship_death_data['timestamp'],
+                        death_type="Fatal Collision",
+                        player_name=ship_death_data['player_name'],
+                        ship_brand=ship_parts[0],
+                        ship_make=' '.join(p.capitalize() for p in ship_parts[1:-1] if not p.isdigit()),
+                        approx_loc=ship_death_data['location'],
+                        hit_zone=fc['hit_zone']
+                    )
+                    death_events.append(event)
+                    del recent_fatal_collisions[i]  # Consume the collision event
+                    is_fatal_collision = True
+                    break
+            
+            if is_fatal_collision:
+                continue
+
+            # If no matching collision was found, process as a regular "Die in a ship" death
+            ship_parts = ship_death_data['ship'].split('_')
             event = DeathEvent(
-                timestamp=data['timestamp'],
+                timestamp=ship_death_data['timestamp'],
                 death_type="Die in a ship",
-                player_name=data['player_name'],
-                ship_brand=ship_brand,
-                ship_make=ship_make,
-                approx_loc=data['location']
+                player_name=ship_death_data['player_name'],
+                ship_brand=ship_parts[0],
+                ship_make=' '.join(p.capitalize() for p in ship_parts[1:-1] if not p.isdigit()),
+                approx_loc=ship_death_data['location']
             )
             death_events.append(event)
             continue
 
+        # 4. Check for "death on foot" events (logic unchanged)
         foot_death_match = PATTERNS['death_on_foot'].search(line)
         if foot_death_match:
             data = foot_death_match.groupdict()
             event_id = data['id']
-
             if event_id not in seen_on_foot_death_ids:
                 seen_on_foot_death_ids.add(event_id)
                 event = DeathEvent(
@@ -219,60 +263,43 @@ def parse_death_events(log_content: str, actor_name: Optional[str] = None) -> Li
     return death_events
 
 def parse_travel_events(log_content: str) -> List[TravelEvent]:
-    """
-    Parses the game.log content to extract valid quantum travel events.
-    """
+    # This function remains unchanged
     travel_events = []
     lines = log_content.splitlines()
     pending_travels: Dict[str, Dict] = {}
-    
-    # Datetime format for parsing and calculating duration
     time_format = "%Y-%m-%dT%H:%M:%S.%fZ"
-
     for line in lines:
         if 'QuantumTravel' not in line:
             continue
-
-        # Check for start/update of a travel sequence
         select_match = PATTERNS['travel_select_dest'].search(line)
         calc_match = PATTERNS['travel_calc_route'].search(line)
         fuel_match = PATTERNS['travel_fuel_est'].search(line)
-        
-        # Any "from" event will overwrite the previous one for that ship, handling invalid attempts
         if select_match:
             data = select_match.groupdict()
             ship_id = data['ship_id']
             pending_travels[ship_id] = {'start_time': data['timestamp'], 'destination': data['destination'], 'ship': ship_id}
             continue
-        
         if calc_match:
             data = calc_match.groupdict()
             ship_id = data['ship_id']
             if ship_id in pending_travels:
                 pending_travels[ship_id]['start_location'] = data['start_loc']
-            continue # Don't consider this a primary start event
-            
+            continue
         if fuel_match:
             data = fuel_match.groupdict()
             ship_id = data['ship_id']
             if ship_id in pending_travels and pending_travels[ship_id]['destination'] == data['destination']:
                 pending_travels[ship_id]['fuel'] = float(data['fuel'])
             continue
-
-        # Check for arrival
         arrive_match = PATTERNS['travel_arrived'].search(line)
         if arrive_match:
             data = arrive_match.groupdict()
             ship_id = data['ship_id']
-            
             if ship_id in pending_travels:
                 pending_event = pending_travels[ship_id]
-                
-                # Calculate duration
                 start_dt = datetime.strptime(pending_event['start_time'], time_format)
                 end_dt = datetime.strptime(data['timestamp'], time_format)
                 duration = (end_dt - start_dt).total_seconds()
-                
                 event = TravelEvent(
                     start_time=pending_event['start_time'],
                     end_time=data['timestamp'],
@@ -283,8 +310,5 @@ def parse_travel_events(log_content: str) -> List[TravelEvent]:
                     fuel_used=pending_event.get('fuel')
                 )
                 travel_events.append(event)
-                
-                # Clear the pending event for this ship
                 del pending_travels[ship_id]
-
     return travel_events
