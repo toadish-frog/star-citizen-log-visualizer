@@ -13,7 +13,7 @@ This Streamlit web application allows you to simply upload your log file and ins
   - Total Death Count
 - **Event Timelines**: Browse detailed, timestamped tables for key in-game events:
   - **Deaths**: A list of all your character's deaths, whether in a ship or on foot.
-  - **Quantum Travel**: A complete history of all valid quantum jumps, including start and end times, duration, and destination.
+  - **Quantum Travel\***: A complete history of all valid quantum jumps, including start and end times, duration, and destination. *\*\*Note: As of SC patch 4.6, only quantum travels that involved in changing server "instance" will be parsed by this visualizer. The same-instance quantum travel log is yet to be found in the `Game.log`. This is an expected behaviour due to SC's server meshing architecture. It is observed when travelling long distance within Stanton system (i.e. from Micortech to Arccorp) where the player is essentially changing "server instance". This also explained why the in-game **Server Error** sometimes only affect regionally but not globally. (i.e. "Server Error at A18", "No server error here at Mircotech"). Nyx system seems to be in one big server instance where long distance quantum travel didnt have the typical "server instance changing" log pattern.*
 - **Data Export**: Download your parsed death and travel event logs as CSV files for your own analysis.
 - **System Metadata**: View technical details about your session, including the game build, and system specifications, in an expandable section.
 

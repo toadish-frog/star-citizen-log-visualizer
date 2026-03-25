@@ -76,7 +76,7 @@ if uploaded_file is not None:
 
     # Travel
     if travel_events:
-        st.subheader("🌌 Quantum Travel History")
+        st.subheader("🌌 Quantum Travel History*")
         travel_df = pd.DataFrame([asdict(e) for e in travel_events])
         st.dataframe(travel_df)
         st.download_button(
